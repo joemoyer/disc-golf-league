@@ -1,8 +1,10 @@
 import { eq } from "drizzle-orm";
+import { PlayerLink } from "@/components/player-link";
 import { createPlayerHoleScore } from "@/lib/actions";
 import { db } from "@/lib/db/client";
 import { getEventScores } from "@/lib/db/queries";
 import { hole, leagueEvent, player, playerLeague } from "@/lib/db/schema";
+import { formatDiff } from "@/lib/format-diff";
 
 export default async function AdminEventScoresPage({
   params,
@@ -25,12 +27,6 @@ export default async function AdminEventScoresPage({
       .where(eq(playerLeague.leagueId, event.leagueId)),
     getEventScores(id),
   ]);
-  const formatDiff = (value: number | string) => {
-    const n = Number(value);
-    if (n === 0) return "E";
-    return n > 0 ? `+${n}` : `${n}`;
-  };
-
   return (
     <section className="space-y-4">
       <h1 className="text-xl font-semibold">Event Scores</h1>
@@ -50,7 +46,12 @@ export default async function AdminEventScoresPage({
         <tbody>
           {results.map((r) => (
             <tr key={r.playerId} className="border-t">
-              <td className="p-2">{r.displayName}</td><td className="p-2">{r.totalScore}</td><td className="p-2">{formatDiff(r.totalDiff)}</td><td className="p-2">{r.holesPlayed}</td>
+              <td className="p-2">
+                <PlayerLink playerId={r.playerId} displayName={r.displayName} />
+              </td>
+              <td className="p-2">{r.totalScore}</td>
+              <td className="p-2">{formatDiff(r.totalDiff)}</td>
+              <td className="p-2">{r.holesPlayed}</td>
             </tr>
           ))}
         </tbody>

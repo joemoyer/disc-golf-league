@@ -1,4 +1,6 @@
+import { PlayerLink } from "@/components/player-link";
 import { getCourseHoles, getEventHoleBreakdown, getEventScores, getPublicLeagueEvent } from "@/lib/db/queries";
+import { formatDiff } from "@/lib/format-diff";
 
 export default async function EventPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -22,12 +24,6 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
     }
     byPlayer.get(row.playerId)!.holeScores.set(row.holeNumber, { score: row.score, par: row.par });
   }
-  const formatDiff = (value: number | string) => {
-    const n = Number(value);
-    if (n === 0) return "E";
-    return n > 0 ? `+${n}` : `${n}`;
-  };
-
   return (
     <section className="space-y-3">
       <h1 className="text-xl font-semibold">{event.name}</h1>
@@ -36,7 +32,13 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
         <thead><tr><th className="p-2 text-left">Player</th><th className="p-2 text-left">Score</th><th className="p-2 text-left">Diff</th></tr></thead>
         <tbody>
           {results.map((r) => (
-            <tr key={r.playerId} className="border-t"><td className="p-2">{r.displayName}</td><td className="p-2">{r.totalScore}</td><td className="p-2">{formatDiff(r.totalDiff)}</td></tr>
+            <tr key={r.playerId} className="border-t">
+              <td className="p-2">
+                <PlayerLink playerId={r.playerId} displayName={r.displayName} />
+              </td>
+              <td className="p-2">{r.totalScore}</td>
+              <td className="p-2">{formatDiff(r.totalDiff)}</td>
+            </tr>
           ))}
         </tbody>
       </table>
@@ -64,7 +66,9 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
           <tbody>
             {Array.from(byPlayer.entries()).map(([playerId, playerData]) => (
               <tr key={playerId} className="border-t">
-                <td className="p-2">{playerData.displayName}</td>
+                <td className="p-2">
+                  <PlayerLink playerId={playerId} displayName={playerData.displayName} />
+                </td>
                 {holeNumbers.map((holeNumber) => {
                   const entry = playerData.holeScores.get(holeNumber);
                   if (!entry) return <td key={holeNumber} className="p-2 text-center">-</td>;

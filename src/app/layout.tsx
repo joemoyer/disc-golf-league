@@ -27,12 +27,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/players">Players</Link>
             <Link href="/courses">Courses</Link>
             <Link href="/leagues">Leagues</Link>
-            <Link href="/admin">Admin</Link>
-            {user ? (
-              <AdminMenu email={user.email ?? "unknown"} />
-            ) : (
-              <span className="ml-auto rounded bg-slate-100 px-2 py-1 text-xs text-slate-600">Admin logged out</span>
-            )}
+            {user ? <AdminMenu email={user.email ?? "unknown"} /> : null}
           </nav>
         </header>
         <main className="mx-auto max-w-6xl p-4">{children}</main>

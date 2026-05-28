@@ -1,4 +1,6 @@
+import { PlayerLink } from "@/components/player-link";
 import { getLeagues, getLeagueStandings } from "@/lib/db/queries";
+import { formatDiff } from "@/lib/format-diff";
 
 type StandingsPageProps = {
   searchParams: Promise<{ leagueId?: string }>;
@@ -9,11 +11,6 @@ export default async function StandingsPage({ searchParams }: StandingsPageProps
   const leagues = await getLeagues();
   const league = leagues.find((l) => l.id === leagueId) ?? leagues[0];
   const standings = league ? await getLeagueStandings(league.id) : [];
-  const formatDiff = (value: number | string) => {
-    const n = Number(value);
-    if (n === 0) return "E";
-    return n > 0 ? `+${n}` : `${n}`;
-  };
 
   return (
     <section className="space-y-3">
@@ -38,7 +35,14 @@ export default async function StandingsPage({ searchParams }: StandingsPageProps
         <thead><tr><th className="p-2 text-left">Player</th><th className="p-2 text-left">Diff</th><th className="p-2 text-left">Events</th><th className="p-2 text-left">Strokes</th></tr></thead>
         <tbody>
           {standings.map((s) => (
-            <tr key={s.playerId} className="border-t"><td className="p-2">{s.displayName}</td><td className="p-2">{formatDiff(s.totalDiff)}</td><td className="p-2">{s.eventsPlayed}</td><td className="p-2">{s.totalStrokes}</td></tr>
+            <tr key={s.playerId} className="border-t">
+              <td className="p-2">
+                <PlayerLink playerId={s.playerId} displayName={s.displayName} />
+              </td>
+              <td className="p-2">{formatDiff(s.totalDiff)}</td>
+              <td className="p-2">{s.eventsPlayed}</td>
+              <td className="p-2">{s.totalStrokes}</td>
+            </tr>
           ))}
         </tbody>
       </table>

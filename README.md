@@ -21,10 +21,11 @@ Copy `.env.example` to `.env` and fill:
 ## Supabase Setup
 
 1. Create a new Supabase project.
-2. In project settings, copy URL + anon key into `.env`.
-3. In API settings, copy service role key into `.env`.
-4. Set `DATABASE_URL` from Supabase connection string.
-5. Create at least one Supabase Auth user for admin login.
+2. In **Settings → API**, copy the **Project URL** (`https://<ref>.supabase.co`) and anon key into `.env`.
+   - `NEXT_PUBLIC_SUPABASE_URL` must be that project URL — **not** the database pooler host (`*.pooler.supabase.com`).
+3. In **Settings → Database**, copy the connection string into `DATABASE_URL` (pooler on port `6543` is fine for Drizzle).
+4. In **Settings → API**, copy the service role key into `.env`.
+5. Create at least one Supabase Auth user for admin login (Authentication → Users).
 
 ## Install
 

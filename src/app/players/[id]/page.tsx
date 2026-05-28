@@ -1,21 +1,60 @@
 import Link from "next/link";
-import { getPlayerById, getPlayerRecentEvents } from "@/lib/db/queries";
+import { getPlayerById, getPlayerRecentEvents, getPlayerStats } from "@/lib/db/queries";
+import { formatDiff } from "@/lib/format-diff";
 
 export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [player, recentEvents] = await Promise.all([getPlayerById(id), getPlayerRecentEvents(id)]);
+  const [player, recentEvents, stats] = await Promise.all([
+    getPlayerById(id),
+    getPlayerRecentEvents(id),
+    getPlayerStats(id),
+  ]);
   if (!player) return <div>Player not found.</div>;
-  const formatDiff = (value: number | string) => {
-    const n = Number(value);
-    if (n === 0) return "E";
-    return n > 0 ? `+${n}` : `${n}`;
-  };
+
   return (
     <section className="space-y-4">
       <h1 className="text-xl font-semibold">{player.displayName}</h1>
-      <p>{player.firstName} {player.lastName}</p>
-      <p>{player.email ?? "No email"}</p>
-      <p>Rating: {player.rating ?? "-"}</p>
+      <p>
+        {player.firstName} {player.lastName}
+      </p>
+      <p>{player.key ? "Udisc Account: @" + player.key : "No Udisc Account"}</p>
+      <p>Rating: {player.rating ?? "N/A"}</p>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <article className="rounded border bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-600">Best Hole</h2>
+          <p className="mt-1 text-lg font-semibold">
+            {stats.bestHole ? `Hole ${stats.bestHole.holeNumber}` : "-"}
+          </p>
+          <p className="text-sm text-slate-600">
+            Avg diff:{" "}
+            {stats.bestHole ? formatDiff(Math.round(stats.bestHole.avgDiff * 10) / 10) : "-"}
+          </p>
+        </article>
+        <article className="rounded border bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-600">Best Round</h2>
+          <p className="mt-1 text-lg font-semibold">
+            {stats.bestRound ? formatDiff(stats.bestRound.roundDiff) : "-"}
+          </p>
+          {stats.bestRound ? (
+            <p className="text-sm">
+              <Link href={`/events/${stats.bestRound.leagueEventId}`} className="text-sky-700 hover:underline">
+                {stats.bestRound.eventName}
+              </Link>
+            </p>
+          ) : (
+            <p className="text-sm text-slate-600">No rounds yet</p>
+          )}
+        </article>
+        <article className="rounded border bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-600">Birdies</h2>
+          <p className="mt-1 text-lg font-semibold">{stats.birdieCount}</p>
+        </article>
+        <article className="rounded border bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-600">Aces</h2>
+          <p className="mt-1 text-lg font-semibold">{stats.aceCount}</p>
+        </article>
+      </div>
 
       <div>
         <h2 className="mb-2 text-lg font-semibold">Recent Events</h2>
