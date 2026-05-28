@@ -67,7 +67,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
           <p className="text-sm text-slate-600">Birdies: {highlights.mostBirdies?.value ?? "-"}</p>
         </article>
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Most Hole in Ones</h2>
+          <h2 className="text-sm font-semibold text-slate-600">Most Aces</h2>
           <HighlightPlayerList players={highlights.mostAces?.players ?? []} />
           <p className="text-sm text-slate-600">Aces: {highlights.mostAces?.value ?? "-"}</p>
         </article>

@@ -4,7 +4,7 @@ import { MiniGameIcon } from "@/components/mini-game-icon";
 import { PlayerLink } from "@/components/player-link";
 import { createMiniGameWin, deleteMiniGameWin } from "@/lib/actions";
 import { db } from "@/lib/db/client";
-import { getEventMiniGameWins, getPlayers } from "@/lib/db/queries";
+import { getEventMiniGameWins, getEventScores } from "@/lib/db/queries";
 import { hole, leagueEvent } from "@/lib/db/schema";
 import { getMiniGameLabel, MINI_GAME_KINDS } from "@/lib/mini-games";
 
@@ -24,12 +24,12 @@ export default async function AdminEventMiniGamesPage({
   });
   if (!event) return <div>Event not found.</div>;
 
-  const [holes, players, wins] = await Promise.all([
+  const [holes, eventPlayers, wins] = await Promise.all([
     db.query.hole.findMany({
       where: eq(hole.courseId, event.courseId),
       orderBy: (h, { asc }) => [asc(h.holeNumber)],
     }),
-    getPlayers(),
+    getEventScores(id),
     getEventMiniGameWins(id),
   ]);
 
@@ -110,12 +110,21 @@ export default async function AdminEventMiniGamesPage({
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-slate-600">Winner</span>
-            <select className="w-full rounded border p-2" name="playerId" required>
-              {players.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.displayName}
-                </option>
-              ))}
+            <select
+              className="w-full rounded border p-2"
+              name="playerId"
+              required
+              disabled={eventPlayers.length === 0}
+            >
+              {eventPlayers.length === 0 ? (
+                <option value="">No scored players for this event</option>
+              ) : (
+                eventPlayers.map((p) => (
+                  <option key={p.playerId} value={p.playerId}>
+                    {p.displayName}
+                  </option>
+                ))
+              )}
             </select>
           </label>
           <label className="block text-sm">
@@ -127,7 +136,11 @@ export default async function AdminEventMiniGamesPage({
             />
           </label>
         </div>
-        <button className="rounded bg-slate-900 px-4 py-2 text-sm text-white" type="submit">
+        <button
+          className="rounded bg-slate-900 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-50"
+          type="submit"
+          disabled={eventPlayers.length === 0}
+        >
           Add winner
         </button>
         <p className="text-xs text-slate-500">
