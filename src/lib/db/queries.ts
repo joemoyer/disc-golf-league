@@ -169,3 +169,59 @@ export const getLeagueById = async (id: string) =>
   db.query.league.findFirst({
     where: eq(league.id, id),
   });
+
+const getHomeHighlightsCached = unstable_cache(
+  async () => {
+    const [lowestRound] = await withDbRetry(() =>
+      db
+        .select({
+          playerName: player.displayName,
+          value: sql<number>`coalesce(sum(${playerHole.score}), 0)`,
+        })
+        .from(playerHole)
+        .innerJoin(player, eq(player.id, playerHole.playerId))
+        .groupBy(player.id, player.displayName, playerHole.leagueEventId)
+        .orderBy(sql`coalesce(sum(${playerHole.score}), 0) asc`)
+        .limit(1)
+    );
+
+    const [mostBirdies] = await withDbRetry(() =>
+      db
+        .select({
+          playerName: player.displayName,
+          value: sql<number>`count(*)::int`,
+        })
+        .from(playerHole)
+        .innerJoin(player, eq(player.id, playerHole.playerId))
+        .innerJoin(hole, eq(hole.id, playerHole.holeId))
+        .where(sql`${playerHole.score} < ${hole.par}`)
+        .groupBy(player.id, player.displayName)
+        .orderBy(sql`count(*) desc`)
+        .limit(1)
+    );
+
+    const [mostAces] = await withDbRetry(() =>
+      db
+        .select({
+          playerName: player.displayName,
+          value: sql<number>`count(*)::int`,
+        })
+        .from(playerHole)
+        .innerJoin(player, eq(player.id, playerHole.playerId))
+        .where(eq(playerHole.score, 1))
+        .groupBy(player.id, player.displayName)
+        .orderBy(sql`count(*) desc`)
+        .limit(1)
+    );
+
+    return {
+      lowestRound: lowestRound ?? null,
+      mostBirdies: mostBirdies ?? null,
+      mostAces: mostAces ?? null,
+    };
+  },
+  ["home-highlights"],
+  { revalidate: 30 }
+);
+
+export const getHomeHighlights = async () => getHomeHighlightsCached();
