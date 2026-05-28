@@ -14,6 +14,7 @@ import {
   playerRatingSnapshot,
 } from "@/lib/db/schema";
 import { withDbRetry } from "@/lib/db/resilient";
+import { buildMiniGameWinsByCell } from "@/lib/mini-games";
 import { PLAYER_RATINGS_ENABLED } from "@/lib/ratings/enabled";
 
 export const PLAYERS_PAGE_SIZE = 15;
@@ -298,12 +299,13 @@ export type LeagueEventListItem = {
 
 export type PastEventPreview = LeagueEventListItem & {
   holeNumbers: number[];
+  miniGamesByCell: Map<string, { kind: string; prize: string | null }[]>;
   topThree: {
     playerId: string;
     displayName: string;
     totalScore: number;
     totalDiff: number;
-    holeScores: { holeNumber: number; score: number }[];
+    holeScores: { holeNumber: number; score: number; par: number }[];
   }[];
 };
 
@@ -343,14 +345,20 @@ export const getLeagueEventsGrouped = async (leagueId: string) => {
 };
 
 const buildPastEventPreview = async (event: LeagueEventListItem): Promise<PastEventPreview> => {
-  const [scores, breakdown] = await Promise.all([getEventScores(event.id), getEventHoleBreakdown(event.id)]);
+  const [scores, breakdown, miniGameWins] = await Promise.all([
+    getEventScores(event.id),
+    getEventHoleBreakdown(event.id),
+    getEventMiniGameWins(event.id),
+  ]);
   const topThree = scores.slice(0, 3);
   const topPlayerIds = new Set(topThree.map((row) => row.playerId));
   const holeNumbers = Array.from(new Set(breakdown.map((row) => row.holeNumber))).sort((a, b) => a - b);
+  const miniGamesByCell = buildMiniGameWinsByCell(miniGameWins);
 
   return {
     ...event,
     holeNumbers,
+    miniGamesByCell,
     topThree: topThree.map((row) => ({
       playerId: row.playerId,
       displayName: row.displayName,
@@ -358,7 +366,7 @@ const buildPastEventPreview = async (event: LeagueEventListItem): Promise<PastEv
       totalDiff: Number(row.totalDiff),
       holeScores: breakdown
         .filter((entry) => entry.playerId === row.playerId && topPlayerIds.has(entry.playerId))
-        .map((entry) => ({ holeNumber: entry.holeNumber, score: entry.score })),
+        .map((entry) => ({ holeNumber: entry.holeNumber, score: entry.score, par: entry.par })),
     })),
   };
 };

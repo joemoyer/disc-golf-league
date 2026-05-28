@@ -1,4 +1,4 @@
-import { MiniGameIconBadge } from "@/components/mini-game-icon";
+import { HoleScoreCellContent } from "@/components/hole-score-cell";
 import { PlayerLink } from "@/components/player-link";
 import {
   getCourseHoles,
@@ -53,7 +53,7 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
         </tbody>
       </table>
 
-      <h2 className="text-lg font-semibold">Hole-by-hole breakdown</h2>
+      <h2 className="text-lg font-semibold">Event Scorecard</h2>
       <div className="overflow-x-auto">
         <table className="w-full border bg-white text-sm">
           <thead>
@@ -81,53 +81,18 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
                 </td>
                 {holeNumbers.map((holeNumber) => {
                   const entry = playerData.holeScores.get(holeNumber);
-                  if (!entry) return <td key={holeNumber} className="p-2 text-center">-</td>;
-                  const isBirdie = entry.score < entry.par;
-                  const isEagleOrBetter = entry.score <= entry.par - 2;
-                  const isBogey = entry.score > entry.par;
-                  const bogeyAmount = entry.score - entry.par;
-                  const isAce = entry.score === 1;
                   const cellWins = miniGamesByCell.get(miniGameCellKey(playerId, holeNumber)) ?? [];
                   return (
                     <td key={holeNumber} className="p-2 text-center">
-                      <div className="flex flex-col items-center gap-0.5">
-                      {isAce ? (
-                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-yellow-700 bg-yellow-200 text-yellow-900">
-                          {entry.score}
-                        </span>
-                      ) : isEagleOrBetter ? (
-                        <span className="relative inline-flex h-8 w-8 items-center justify-center rounded-full border border-blue-800 bg-blue-200 text-blue-900">
-                          <span className="absolute inset-[2px] rounded-full border border-blue-800" />
-                          <span className="relative z-10">{entry.score}</span>
-                        </span>
-                      ) : isBirdie ? (
-                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-sky-700 bg-sky-100 text-sky-900">
-                          {entry.score}
-                        </span>
-                      ) : isBogey && bogeyAmount >= 2 ? (
-                        <span className="relative inline-flex h-8 w-8 items-center justify-center border border-red-800 bg-red-200 text-red-950">
-                          <span className="absolute inset-[2px] border border-red-800" />
-                          <span className="relative z-10">{entry.score}</span>
-                        </span>
-                      ) : isBogey ? (
-                        <span className="inline-flex h-7 w-7 items-center justify-center border border-red-700 bg-red-100 text-red-900">
-                          {entry.score}
-                        </span>
+                      {entry ? (
+                        <HoleScoreCellContent
+                          score={entry.score}
+                          par={entry.par}
+                          miniGameWins={cellWins}
+                        />
                       ) : (
-                        <span>{entry.score}</span>
+                        "-"
                       )}
-                      {cellWins.length > 0 ? (
-                        <span className="flex flex-wrap justify-center gap-0.5">
-                          {cellWins.map((win, index) => (
-                            <MiniGameIconBadge
-                              key={`${win.kind}-${index}`}
-                              kind={win.kind}
-                              prize={win.prize}
-                            />
-                          ))}
-                        </span>
-                      ) : null}
-                      </div>
                     </td>
                   );
                 })}

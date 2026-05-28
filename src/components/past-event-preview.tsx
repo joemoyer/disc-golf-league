@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { HoleScoreCellContent } from "@/components/hole-score-cell";
 import { PlayerLink } from "@/components/player-link";
 import type { PastEventPreview } from "@/lib/db/queries";
 import { formatDiff } from "@/lib/format-diff";
+import { miniGameCellKey } from "@/lib/mini-games";
 
 type PastEventPreviewCardProps = {
   preview: PastEventPreview;
@@ -53,9 +55,18 @@ export function PastEventPreviewCard({ preview }: PastEventPreviewCardProps) {
                   <td className="p-1 text-center">{formatDiff(row.totalDiff)}</td>
                   {preview.holeNumbers.map((holeNumber) => {
                     const holeScore = row.holeScores.find((h) => h.holeNumber === holeNumber);
+                    const cellWins = preview.miniGamesByCell.get(miniGameCellKey(row.playerId, holeNumber)) ?? [];
                     return (
                       <td key={holeNumber} className="p-1 text-center">
-                        {holeScore?.score ?? "-"}
+                        {holeScore ? (
+                          <HoleScoreCellContent
+                            score={holeScore.score}
+                            par={holeScore.par}
+                            miniGameWins={cellWins}
+                          />
+                        ) : (
+                          "-"
+                        )}
                       </td>
                     );
                   })}
