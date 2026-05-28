@@ -5,6 +5,7 @@ const RETRYABLE_PG_CODES = new Set([
   "57P03", // cannot_connect_now
   "08001", // sqlclient_unable_to_establish_sqlconnection
   "08006", // connection_failure
+  "57014", // statement timeout (often pooler queue / cold connection)
 ]);
 
 const RETRYABLE_NODE_CODES = new Set([

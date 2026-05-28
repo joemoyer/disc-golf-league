@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { PlayerLink } from "@/components/player-link";
 import { createPlayerHoleScore } from "@/lib/actions";
@@ -29,7 +30,15 @@ export default async function AdminEventScoresPage({
   ]);
   return (
     <section className="space-y-4">
-      <h1 className="text-xl font-semibold">Event Scores</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-xl font-semibold">Event Scores</h1>
+        <Link
+          href={`/admin/events/${id}/mini-games`}
+          className="rounded border bg-white px-3 py-2 text-sm hover:bg-slate-50"
+        >
+          Mini games →
+        </Link>
+      </div>
       {error ? (
         <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
       ) : null}

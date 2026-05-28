@@ -5,7 +5,9 @@ import { asc, eq, sql } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db/client";
-import { course, hole, league, leagueEvent, player, playerHole, playerLeague } from "@/lib/db/schema";
+import { isMiniGameKind } from "@/lib/mini-games";
+import { course, hole, league, leagueEvent, miniGameWin, player, playerHole, playerLeague } from "@/lib/db/schema";
+import { PLAYER_RATINGS_ENABLED, recomputeAllRatings, recomputeRatingsAfterEvent } from "@/lib/ratings";
 
 const required = (value: FormDataEntryValue | null) => (value ? String(value) : "");
 
@@ -16,7 +18,6 @@ export async function createPlayer(formData: FormData) {
     firstName: required(formData.get("firstName")),
     lastName: required(formData.get("lastName")),
     email: String(formData.get("email") || "") || null,
-    rating: Number(formData.get("rating") || 0) || null,
   });
   revalidatePath("/admin/players");
 }
@@ -169,7 +170,64 @@ export async function createPlayerHoleScore(formData: FormData) {
     .insert(playerLeague)
     .values({ playerId, leagueId: event.leagueId })
     .onConflictDoNothing();
+  // Player ratings — re-enable with PLAYER_RATINGS_ENABLED in src/lib/ratings/enabled.ts
+  if (PLAYER_RATINGS_ENABLED) {
+    await recomputeRatingsAfterEvent(eventId);
+  }
   revalidatePath(`/admin/events/${eventId}/scores`);
+  revalidatePath("/players");
+  revalidatePath(`/players/${playerId}`);
+}
+
+export async function createMiniGameWin(formData: FormData) {
+  const eventId = required(formData.get("leagueEventId"));
+  const playerId = required(formData.get("playerId"));
+  const holeId = required(formData.get("holeId"));
+  const kind = required(formData.get("kind"));
+  const prize = String(formData.get("prize") || "").trim() || null;
+
+  if (!isMiniGameKind(kind)) {
+    redirect(`/admin/events/${eventId}/mini-games?error=${encodeURIComponent("Invalid mini game type.")}`);
+  }
+
+  const event = await db.query.leagueEvent.findFirst({
+    where: eq(leagueEvent.id, eventId),
+    columns: { id: true, courseId: true },
+  });
+  if (!event) {
+    redirect("/admin/login?error=event_not_found");
+  }
+
+  const holeRecord = await db.query.hole.findFirst({
+    where: eq(hole.id, holeId),
+    columns: { id: true, courseId: true },
+  });
+  if (!holeRecord || holeRecord.courseId !== event.courseId) {
+    redirect(
+      `/admin/events/${eventId}/mini-games?error=${encodeURIComponent("Hole does not belong to this event course.")}`
+    );
+  }
+
+  await db.insert(miniGameWin).values({
+    leagueEventId: eventId,
+    holeId,
+    playerId,
+    kind,
+    prize,
+  });
+
+  revalidatePath(`/admin/events/${eventId}/mini-games`);
+  revalidatePath(`/events/${eventId}`);
+}
+
+export async function deleteMiniGameWin(formData: FormData) {
+  const winId = required(formData.get("winId"));
+  const eventId = required(formData.get("leagueEventId"));
+
+  await db.delete(miniGameWin).where(eq(miniGameWin.id, winId));
+
+  revalidatePath(`/admin/events/${eventId}/mini-games`);
+  revalidatePath(`/events/${eventId}`);
 }
 
 type SpreadsheetRow = {
@@ -322,10 +380,15 @@ export async function importEventSpreadsheet(formData: FormData) {
     }
   }
 
+  if (PLAYER_RATINGS_ENABLED) {
+    await recomputeRatingsAfterEvent(ensuredEvent.id);
+  }
   revalidatePath("/admin");
   revalidatePath(`/admin/events/${ensuredEvent.id}/scores`);
   revalidatePath(`/events/${ensuredEvent.id}`);
   revalidatePath("/standings");
+  revalidatePath("/players");
+  revalidatePath("/");
 }
 
 export async function recomputeAllDiffs() {
@@ -342,8 +405,28 @@ export async function recomputeAllDiffs() {
     select count(*)::int as corrected from updated
   `);
   const corrected = result[0]?.corrected ?? 0;
+  // if (PLAYER_RATINGS_ENABLED) {
+  //   const ratingResult = await recomputeAllRatings();
+  //   ...
+  // }
 
   revalidatePath("/standings");
   revalidatePath("/admin");
+  revalidatePath("/players");
+  revalidatePath("/");
   redirect(`/admin?maintenance=diff_recomputed&corrected=${corrected}`);
+}
+
+/** Disabled while PLAYER_RATINGS_ENABLED is false — admin button hidden */
+export async function recomputeAllPlayerRatings() {
+  if (!PLAYER_RATINGS_ENABLED) {
+    redirect("/admin");
+  }
+  const result = await recomputeAllRatings();
+  revalidatePath("/admin");
+  revalidatePath("/players");
+  revalidatePath("/");
+  redirect(
+    `/admin?maintenance=ratings_recomputed&players=${result.playersUpdated}&snapshots=${result.snapshotsWritten}`
+  );
 }

@@ -26,6 +26,7 @@ Copy `.env.example` to `.env` and fill:
 3. In **Settings → Database**, copy the connection string into `DATABASE_URL` (pooler on port `6543` is fine for Drizzle).
 4. In **Settings → API**, copy the service role key into `.env`.
 5. Create at least one Supabase Auth user for admin login (Authentication → Users).
+6. After importing scores, run **Admin → Recompute All Ratings** to build Elo/handicap and history snapshots.
 
 ## Install
 

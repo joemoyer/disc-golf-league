@@ -1,15 +1,22 @@
 import Link from "next/link";
-import { getPlayerById, getPlayerRecentEvents, getPlayerStats } from "@/lib/db/queries";
+// import { RatingHistoryChart } from "@/components/rating-history-chart";
+import { MiniGameIcon } from "@/components/mini-game-icon";
+import { getPlayerPageData } from "@/lib/db/queries";
 import { formatDiff } from "@/lib/format-diff";
+import { PLAYER_RATINGS_ENABLED } from "@/lib/ratings/enabled";
 
-export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
+type PlayerDetailPageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ leagueId?: string }>;
+};
+
+export default async function PlayerDetailPage({ params, searchParams }: PlayerDetailPageProps) {
   const { id } = await params;
-  const [player, recentEvents, stats] = await Promise.all([
-    getPlayerById(id),
-    getPlayerRecentEvents(id),
-    getPlayerStats(id),
-  ]);
-  if (!player) return <div>Player not found.</div>;
+  const { leagueId } = await searchParams;
+  const data = await getPlayerPageData(id, leagueId);
+  if (!data) return <div>Player not found.</div>;
+
+  const { player, recentEvents, stats } = data;
 
   return (
     <section className="space-y-4">
@@ -17,8 +24,12 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
       <p>
         {player.firstName} {player.lastName}
       </p>
-      <p>{player.key ? "Udisc Account: @" + player.key : "No Udisc Account"}</p>
-      <p>Rating: {player.rating ?? "N/A"}</p>
+      <p>{player.key ? `Udisc Account: @${player.key}` : "No Udisc Account"}</p>
+      {PLAYER_RATINGS_ENABLED ? (
+        <p className="text-lg">
+          <span className="font-medium text-slate-600">Rating:</span> {player.rating}
+        </p>
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <article className="rounded border bg-white p-4">
@@ -55,6 +66,37 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
           <p className="mt-1 text-lg font-semibold">{stats.aceCount}</p>
         </article>
       </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <article className="rounded border bg-white p-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+            <MiniGameIcon kind="closest_to_pin" className="h-4 w-4" />
+            CTPs
+          </h2>
+          <p className="mt-1 text-lg font-semibold">{stats.ctpCount}</p>
+        </article>
+        <article className="rounded border bg-white p-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+            <MiniGameIcon kind="longest_putt" className="h-4 w-4" />
+            Longest Putts
+          </h2>
+          <p className="mt-1 text-lg font-semibold">{stats.longestPuttCount}</p>
+        </article>
+        <article className="rounded border bg-white p-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+            <MiniGameIcon kind="shortest_drive" className="h-4 w-4" />
+            Shortest Drives
+          </h2>
+          <p className="mt-1 text-lg font-semibold">{stats.shortestDriveCount}</p>
+        </article>
+      </div>
+
+      {/* Player ratings UI — set PLAYER_RATINGS_ENABLED in src/lib/ratings/enabled.ts
+      <section className="space-y-3 rounded border bg-white p-4">
+        ...
+        <RatingHistoryChart history={ratingHistory} />
+      </section>
+      */}
 
       <div>
         <h2 className="mb-2 text-lg font-semibold">Recent Events</h2>

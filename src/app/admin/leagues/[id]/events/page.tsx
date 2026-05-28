@@ -32,7 +32,15 @@ export default async function AdminLeagueEventsPage({ params }: { params: Promis
       <ul className="space-y-2">
         {events.map((e) => (
           <li key={e.id} className="rounded border bg-white p-3">
-            <Link href={`/admin/events/${e.id}/scores`} className="font-medium">{e.name}</Link>
+            <div className="font-medium">{e.name}</div>
+            <div className="mt-1 flex gap-3 text-sm">
+              <Link href={`/admin/events/${e.id}/scores`} className="text-slate-700 underline">
+                Scores
+              </Link>
+              <Link href={`/admin/events/${e.id}/mini-games`} className="text-slate-700 underline">
+                Mini games
+              </Link>
+            </div>
           </li>
         ))}
       </ul>

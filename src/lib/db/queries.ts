@@ -2,8 +2,19 @@ import "server-only";
 import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
 import { unstable_cache } from "next/cache";
 import { db } from "@/lib/db/client";
-import { course, hole, league, leagueEvent, player, playerHole, playerLeague } from "@/lib/db/schema";
+import {
+  course,
+  hole,
+  league,
+  leagueEvent,
+  miniGameWin,
+  player,
+  playerHole,
+  playerLeague,
+  playerRatingSnapshot,
+} from "@/lib/db/schema";
 import { withDbRetry } from "@/lib/db/resilient";
+import { PLAYER_RATINGS_ENABLED } from "@/lib/ratings/enabled";
 
 export const PLAYERS_PAGE_SIZE = 15;
 
@@ -83,7 +94,11 @@ export const getCoursesWithStats = unstable_cache(
 export const getCourseHoles = async (courseId: string) =>
   db.query.hole.findMany({ where: eq(hole.courseId, courseId), orderBy: asc(hole.holeNumber) });
 
-export const getLeagues = async () => db.query.league.findMany({ orderBy: asc(league.name) });
+export const getLeagues = unstable_cache(
+  async () => withDbRetry(() => db.query.league.findMany({ orderBy: asc(league.name) })),
+  ["get-leagues"],
+  { revalidate: 60 }
+);
 
 export const getLeagueEvents = async (leagueId: string) =>
   db.query.leagueEvent.findMany({
@@ -136,6 +151,31 @@ const getEventHoleBreakdownCached = unstable_cache(
 );
 
 export const getEventHoleBreakdown = async (eventId: string) => getEventHoleBreakdownCached(eventId);
+
+const getEventMiniGameWinsCached = unstable_cache(
+  async (eventId: string) =>
+    withDbRetry(() =>
+      db
+        .select({
+          id: miniGameWin.id,
+          playerId: miniGameWin.playerId,
+          displayName: player.displayName,
+          holeId: miniGameWin.holeId,
+          holeNumber: hole.holeNumber,
+          kind: miniGameWin.kind,
+          prize: miniGameWin.prize,
+        })
+        .from(miniGameWin)
+        .innerJoin(player, eq(player.id, miniGameWin.playerId))
+        .innerJoin(hole, eq(hole.id, miniGameWin.holeId))
+        .where(eq(miniGameWin.leagueEventId, eventId))
+        .orderBy(asc(hole.holeNumber), asc(miniGameWin.kind), asc(player.displayName))
+    ),
+  ["event-mini-game-wins"],
+  { revalidate: 10 }
+);
+
+export const getEventMiniGameWins = async (eventId: string) => getEventMiniGameWinsCached(eventId);
 
 const getLeagueStandingsCached = unstable_cache(
   async (leagueId: string) =>
@@ -435,10 +475,18 @@ export type PlayerStats = {
   } | null;
   birdieCount: number;
   aceCount: number;
+  ctpCount: number;
+  longestPuttCount: number;
+  shortestDriveCount: number;
 };
 
+const miniGameCountForKind = (
+  rows: { kind: string; count: number }[],
+  kind: "closest_to_pin" | "longest_putt" | "shortest_drive"
+) => Number(rows.find((row) => row.kind === kind)?.count ?? 0);
+
 export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => {
-  const [bestHoleRows, roundRows, birdieResult, aceResult] = await Promise.all([
+  const [bestHoleRows, roundRows, countsRow, miniGameRows] = await Promise.all([
     db
       .select({
         holeNumber: hole.holeNumber,
@@ -462,14 +510,21 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
       .where(eq(playerHole.playerId, playerId))
       .groupBy(leagueEvent.id, leagueEvent.name, leagueEvent.eventDate),
     db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({
+        birdieCount: sql<number>`count(*) filter (where ${playerHole.score} < ${hole.par})::int`,
+        aceCount: sql<number>`count(*) filter (where ${playerHole.score} = 1)::int`,
+      })
       .from(playerHole)
       .innerJoin(hole, eq(hole.id, playerHole.holeId))
-      .where(and(eq(playerHole.playerId, playerId), sql`${playerHole.score} < ${hole.par}`)),
+      .where(eq(playerHole.playerId, playerId)),
     db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(playerHole)
-      .where(and(eq(playerHole.playerId, playerId), eq(playerHole.score, 1))),
+      .select({
+        kind: miniGameWin.kind,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(miniGameWin)
+      .where(eq(miniGameWin.playerId, playerId))
+      .groupBy(miniGameWin.kind),
   ]);
 
   const bestRound =
@@ -499,7 +554,70 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
           roundDiff: Number(bestRound.roundDiff),
         }
       : null,
-    birdieCount: Number(birdieResult[0]?.count ?? 0),
-    aceCount: Number(aceResult[0]?.count ?? 0),
+    birdieCount: Number(countsRow[0]?.birdieCount ?? 0),
+    aceCount: Number(countsRow[0]?.aceCount ?? 0),
+    ctpCount: miniGameCountForKind(miniGameRows, "closest_to_pin"),
+    longestPuttCount: miniGameCountForKind(miniGameRows, "longest_putt"),
+    shortestDriveCount: miniGameCountForKind(miniGameRows, "shortest_drive"),
   };
+};
+
+export const getPlayerPageData = async (playerId: string, leagueId?: string) =>
+  withDbRetry(async () => {
+    const playerRecord = await db.query.player.findFirst({
+      where: eq(player.id, playerId),
+    });
+    if (!playerRecord) return null;
+
+    const [recentEvents, ratingHistory, leagues, stats] = await Promise.all([
+      getPlayerRecentEvents(playerId),
+      PLAYER_RATINGS_ENABLED ? getPlayerRatingHistory(playerId, leagueId) : Promise.resolve([]),
+      getLeagues(),
+      getPlayerStats(playerId),
+    ]);
+
+    return { player: playerRecord, recentEvents, ratingHistory, leagues, stats };
+  });
+
+export type PlayerRatingHistoryPoint = {
+  snapshotDate: string | null;
+  rating: number;
+  ratingDelta: number;
+  roundDiff: number;
+  leagueEventId: string;
+  eventName: string;
+  leagueName: string;
+};
+
+export const getPlayerRatingHistory = async (playerId: string, leagueId?: string) => {
+  const rows = await db
+    .select({
+      snapshotDate: playerRatingSnapshot.snapshotDate,
+      rating: playerRatingSnapshot.rating,
+      ratingDelta: playerRatingSnapshot.ratingDelta,
+      roundDiff: playerRatingSnapshot.roundDiff,
+      leagueEventId: playerRatingSnapshot.leagueEventId,
+      eventName: leagueEvent.name,
+      leagueName: league.name,
+      leagueId: playerRatingSnapshot.leagueId,
+    })
+    .from(playerRatingSnapshot)
+    .innerJoin(leagueEvent, eq(leagueEvent.id, playerRatingSnapshot.leagueEventId))
+    .innerJoin(league, eq(league.id, playerRatingSnapshot.leagueId))
+    .where(
+      leagueId
+        ? and(eq(playerRatingSnapshot.playerId, playerId), eq(playerRatingSnapshot.leagueId, leagueId))
+        : eq(playerRatingSnapshot.playerId, playerId)
+    )
+    .orderBy(asc(playerRatingSnapshot.snapshotDate), asc(playerRatingSnapshot.createdDate));
+
+  return rows.map((row) => ({
+    snapshotDate: row.snapshotDate,
+    rating: row.rating,
+    ratingDelta: row.ratingDelta,
+    roundDiff: row.roundDiff,
+    leagueEventId: row.leagueEventId,
+    eventName: row.eventName,
+    leagueName: row.leagueName,
+  })) satisfies PlayerRatingHistoryPoint[];
 };

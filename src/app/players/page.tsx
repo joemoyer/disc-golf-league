@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Pagination } from "@/components/pagination";
 import { getPlayersPaginated } from "@/lib/db/queries";
+import { PLAYER_RATINGS_ENABLED } from "@/lib/ratings/enabled";
 
 type PlayersPageProps = {
   searchParams: Promise<{ page?: string; q?: string }>;
@@ -49,6 +50,9 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
             <Link href={`/players/${p.id}`} className="font-medium text-sky-700 hover:underline">
               {p.displayName}
             </Link>
+            {PLAYER_RATINGS_ENABLED ? (
+              <p className="text-sm text-slate-600">Rating {p.rating}</p>
+            ) : null}
             {p.email ? <p className="text-sm text-slate-600">{p.email}</p> : null}
           </li>
         ))}

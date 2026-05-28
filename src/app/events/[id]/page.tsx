@@ -1,14 +1,24 @@
+import { MiniGameIconBadge } from "@/components/mini-game-icon";
 import { PlayerLink } from "@/components/player-link";
-import { getCourseHoles, getEventHoleBreakdown, getEventScores, getPublicLeagueEvent } from "@/lib/db/queries";
+import {
+  getCourseHoles,
+  getEventHoleBreakdown,
+  getEventMiniGameWins,
+  getEventScores,
+  getPublicLeagueEvent,
+} from "@/lib/db/queries";
 import { formatDiff } from "@/lib/format-diff";
+import { buildMiniGameWinsByCell, miniGameCellKey } from "@/lib/mini-games";
 
 export default async function EventPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [event, results, holeBreakdown] = await Promise.all([
+  const [event, results, holeBreakdown, miniGameWins] = await Promise.all([
     getPublicLeagueEvent(id),
     getEventScores(id),
     getEventHoleBreakdown(id),
+    getEventMiniGameWins(id),
   ]);
+  const miniGamesByCell = buildMiniGameWinsByCell(miniGameWins);
   if (!event) return <div>Event not found.</div>;
   const courseHoles = await getCourseHoles(event.courseId);
   const holeInfoByNumber = new Map(courseHoles.map((h) => [h.holeNumber, { par: h.par, distanceFeet: h.distanceFeet }]));
@@ -77,8 +87,10 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
                   const isBogey = entry.score > entry.par;
                   const bogeyAmount = entry.score - entry.par;
                   const isAce = entry.score === 1;
+                  const cellWins = miniGamesByCell.get(miniGameCellKey(playerId, holeNumber)) ?? [];
                   return (
                     <td key={holeNumber} className="p-2 text-center">
+                      <div className="flex flex-col items-center gap-0.5">
                       {isAce ? (
                         <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-yellow-700 bg-yellow-200 text-yellow-900">
                           {entry.score}
@@ -104,6 +116,18 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
                       ) : (
                         <span>{entry.score}</span>
                       )}
+                      {cellWins.length > 0 ? (
+                        <span className="flex flex-wrap justify-center gap-0.5">
+                          {cellWins.map((win, index) => (
+                            <MiniGameIconBadge
+                              key={`${win.kind}-${index}`}
+                              kind={win.kind}
+                              prize={win.prize}
+                            />
+                          ))}
+                        </span>
+                      ) : null}
+                      </div>
                     </td>
                   );
                 })}
