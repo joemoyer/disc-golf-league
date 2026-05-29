@@ -7,8 +7,8 @@ import "./globals.css";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Disc Golf League",
-  description: "Lightweight disc golf league tracker",
+  title: "Disc Golf League Stats",
+  description: "Disc Golf League Stats Tracker",
   icons: {
     icon: "/favicon.ico",
   },

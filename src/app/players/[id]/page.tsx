@@ -1,7 +1,9 @@
 import Link from "next/link";
 // import { RatingHistoryChart } from "@/components/rating-history-chart";
+import { RoundDiffCellContent } from "@/components/round-diff-cell";
+import { StatCardTitle } from "@/components/stat-icon";
 import { MiniGameIcon } from "@/components/mini-game-icon";
-import { getPlayerPageData } from "@/lib/db/queries";
+import { getPlayerPageData, isPlayerBestRound } from "@/lib/db/queries";
 import { formatDiff } from "@/lib/format-diff";
 import { PLAYER_RATINGS_ENABLED } from "@/lib/ratings/enabled";
 
@@ -33,36 +35,46 @@ export default async function PlayerDetailPage({ params, searchParams }: PlayerD
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Best Hole</h2>
+          <StatCardTitle kind="best_hole">Best Hole</StatCardTitle>
           <p className="mt-1 text-lg font-semibold">
             {stats.bestHole ? `Hole ${stats.bestHole.holeNumber}` : "-"}
           </p>
+          {stats.bestHole ? (
+            <p className="text-sm">
+              <Link href={`/courses/${stats.bestHole.courseId}`} className="text-sky-700 hover:underline">
+                {stats.bestHole.courseName}
+              </Link>
+            </p>
+          ) : null}
           <p className="text-sm text-slate-600">
             Avg diff:{" "}
             {stats.bestHole ? formatDiff(Math.round(stats.bestHole.avgDiff * 10) / 10) : "-"}
           </p>
         </article>
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Best Round</h2>
+          <StatCardTitle kind="best_round">Best Round</StatCardTitle>
           <p className="mt-1 text-lg font-semibold">
             {stats.bestRound ? formatDiff(stats.bestRound.roundDiff) : "-"}
           </p>
           {stats.bestRound ? (
-            <p className="text-sm">
-              <Link href={`/events/${stats.bestRound.leagueEventId}`} className="text-sky-700 hover:underline">
-                {stats.bestRound.eventName}
-              </Link>
-            </p>
+            <>
+              <p className="text-sm">
+                <Link href={`/events/${stats.bestRound.leagueEventId}`} className="text-sky-700 hover:underline">
+                  {stats.bestRound.eventName}
+                </Link>
+              </p>
+              <p className="text-sm text-slate-600">{stats.bestRound.courseName}</p>
+            </>
           ) : (
             <p className="text-sm text-slate-600">No rounds yet</p>
           )}
         </article>
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Birdies</h2>
+          <StatCardTitle kind="birdie">Birdies</StatCardTitle>
           <p className="mt-1 text-lg font-semibold">{stats.birdieCount}</p>
         </article>
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Aces</h2>
+          <StatCardTitle kind="ace">Aces</StatCardTitle>
           <p className="mt-1 text-lg font-semibold">{stats.aceCount}</p>
         </article>
       </div>
@@ -120,7 +132,12 @@ export default async function PlayerDetailPage({ params, searchParams }: PlayerD
                 </td>
                 <td className="p-2">{event.courseName}</td>
                 <td className="p-2">{event.totalScore}</td>
-                <td className="p-2">{formatDiff(event.totalDiff)}</td>
+                <td className="p-2">
+                  <RoundDiffCellContent
+                    diff={event.totalDiff}
+                    isBestRound={isPlayerBestRound(event.leagueEventId, stats.bestRound?.leagueEventId)}
+                  />
+                </td>
                 <td className="p-2">{event.holesPlayed}</td>
               </tr>
             ))}

@@ -109,15 +109,27 @@ export function MiniGameIcon({ kind, className = "", title }: MiniGameIconProps)
   }
 }
 
-export function MiniGameIconBadge({ kind, prize }: { kind: string; prize: string | null }) {
+export function MiniGameIconBadge({
+  kind,
+  prize,
+  overlay = false,
+}: {
+  kind: string;
+  prize: string | null;
+  overlay?: boolean;
+}) {
   const label = getMiniGameLabel(kind);
   const tooltip = prize ? `${label} — ${prize}` : label;
   return (
     <span
-      className="inline-flex items-center justify-center rounded bg-white/90 p-0.5 shadow-sm ring-1 ring-slate-200"
+      className={
+        overlay
+          ? "inline-flex items-center justify-center rounded-full bg-white p-px shadow ring-1 ring-slate-200"
+          : "inline-flex items-center justify-center rounded bg-white/90 p-0.5 shadow-sm ring-1 ring-slate-200"
+      }
       title={tooltip}
     >
-      <MiniGameIcon kind={kind} title={tooltip} />
+      <MiniGameIcon kind={kind} title={tooltip} className={overlay ? "h-3 w-3" : undefined} />
     </span>
   );
 }

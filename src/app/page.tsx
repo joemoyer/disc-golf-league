@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { HighlightPlayerList } from "@/components/highlight-player-list";
+import { StatCardTitle } from "@/components/stat-icon";
 import { LeagueFilterForm } from "@/components/league-filter-form";
 import { PastEventPreviewCard } from "@/components/past-event-preview";
 import {
@@ -44,7 +45,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
 
       <div className="grid gap-3 md:grid-cols-3">
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Best Round</h2>
+          <StatCardTitle kind="best_round">Best Round</StatCardTitle>
           <HighlightPlayerList players={highlights.bestRound?.players ?? []} />
           <p className="text-sm text-slate-600">
             Diff: {highlights.bestRound ? formatDiff(highlights.bestRound.roundDiff) : "-"}
@@ -56,18 +57,19 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                   <Link href={`/events/${event.leagueEventId}`} className="text-sky-700 hover:underline">
                     {event.eventName}
                   </Link>
+                  <span className="block text-slate-600">{event.courseName}</span>
                 </p>
               ))}
             </div>
           ) : null}
         </article>
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Most Birdies</h2>
+          <StatCardTitle kind="birdie">Most Birdies</StatCardTitle>
           <HighlightPlayerList players={highlights.mostBirdies?.players ?? []} />
           <p className="text-sm text-slate-600">Birdies: {highlights.mostBirdies?.value ?? "-"}</p>
         </article>
         <article className="rounded border bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-600">Most Aces</h2>
+          <StatCardTitle kind="ace">Most Aces</StatCardTitle>
           <HighlightPlayerList players={highlights.mostAces?.players ?? []} />
           <p className="text-sm text-slate-600">Aces: {highlights.mostAces?.value ?? "-"}</p>
         </article>

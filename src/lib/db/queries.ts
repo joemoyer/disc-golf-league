@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { unstable_cache } from "next/cache";
 import { db } from "@/lib/db/client";
 import {
@@ -129,6 +129,66 @@ const getEventScoresCached = unstable_cache(
 );
 
 export const getEventScores = async (eventId: string) => getEventScoresCached(eventId);
+
+type RoundForBestPick = {
+  leagueEventId: string;
+  eventDate: string | null;
+  roundDiff: number;
+};
+
+/** Lowest diff wins; on a tie, the oldest event date wins (single best round). */
+export const pickBestRound = <T extends RoundForBestPick>(rounds: T[]): T | null => {
+  if (rounds.length === 0) return null;
+  return rounds.reduce((best, row) => {
+    const rowDiff = Number(row.roundDiff);
+    const bestDiff = Number(best.roundDiff);
+    if (rowDiff < bestDiff) return row;
+    if (rowDiff > bestDiff) return best;
+    const rowDate = row.eventDate ?? "9999-12-31";
+    const bestDate = best.eventDate ?? "9999-12-31";
+    if (rowDate !== bestDate) return rowDate < bestDate ? row : best;
+    return row.leagueEventId.localeCompare(best.leagueEventId) < 0 ? row : best;
+  });
+};
+
+export const getBestRoundEventIdForPlayers = async (playerIds: string[]) => {
+  if (playerIds.length === 0) return new Map<string, string>();
+
+  const roundTotals = await withDbRetry(() =>
+    db
+      .select({
+        playerId: playerHole.playerId,
+        leagueEventId: playerHole.leagueEventId,
+        eventDate: leagueEvent.eventDate,
+        roundDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)::int`,
+      })
+      .from(playerHole)
+      .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
+      .where(inArray(playerHole.playerId, playerIds))
+      .groupBy(playerHole.playerId, playerHole.leagueEventId, leagueEvent.eventDate)
+  );
+
+  const roundsByPlayer = new Map<string, RoundForBestPick[]>();
+  for (const row of roundTotals) {
+    const rounds = roundsByPlayer.get(row.playerId) ?? [];
+    rounds.push({
+      leagueEventId: row.leagueEventId,
+      eventDate: row.eventDate,
+      roundDiff: Number(row.roundDiff),
+    });
+    roundsByPlayer.set(row.playerId, rounds);
+  }
+
+  const bestEventByPlayer = new Map<string, string>();
+  for (const [playerId, rounds] of roundsByPlayer) {
+    const best = pickBestRound(rounds);
+    if (best) bestEventByPlayer.set(playerId, best.leagueEventId);
+  }
+  return bestEventByPlayer;
+};
+
+export const isPlayerBestRound = (leagueEventId: string, bestRoundEventId: string | undefined) =>
+  bestRoundEventId !== undefined && leagueEventId === bestRoundEventId;
 
 const getEventHoleBreakdownCached = unstable_cache(
   async (eventId: string) =>
@@ -267,8 +327,9 @@ export type HomeBestRoundHighlight = {
   players: (HomeHighlightPlayer & {
     leagueEventId: string;
     eventName: string;
+    courseName: string;
   })[];
-  eventLinks: { leagueEventId: string; eventName: string }[];
+  eventLinks: { leagueEventId: string; eventName: string; courseName: string }[];
 };
 
 export type HomeCountHighlight = {
@@ -305,6 +366,7 @@ export type PastEventPreview = LeagueEventListItem & {
     displayName: string;
     totalScore: number;
     totalDiff: number;
+    isBestRound: boolean;
     holeScores: { holeNumber: number; score: number; par: number }[];
   }[];
 };
@@ -354,6 +416,7 @@ const buildPastEventPreview = async (event: LeagueEventListItem): Promise<PastEv
   const topPlayerIds = new Set(topThree.map((row) => row.playerId));
   const holeNumbers = Array.from(new Set(breakdown.map((row) => row.holeNumber))).sort((a, b) => a - b);
   const miniGamesByCell = buildMiniGameWinsByCell(miniGameWins);
+  const bestRoundEventIds = await getBestRoundEventIdForPlayers(topThree.map((row) => row.playerId));
 
   return {
     ...event,
@@ -364,6 +427,7 @@ const buildPastEventPreview = async (event: LeagueEventListItem): Promise<PastEv
       displayName: row.displayName,
       totalScore: Number(row.totalScore),
       totalDiff: Number(row.totalDiff),
+      isBestRound: isPlayerBestRound(event.id, bestRoundEventIds.get(row.playerId)),
       holeScores: breakdown
         .filter((entry) => entry.playerId === row.playerId && topPlayerIds.has(entry.playerId))
         .map((entry) => ({ holeNumber: entry.holeNumber, score: entry.score, par: entry.par })),
@@ -385,13 +449,15 @@ const getHomeHighlightsForLeague = async (leagueId: string): Promise<HomeHighlig
           playerName: player.displayName,
           leagueEventId: playerHole.leagueEventId,
           eventName: leagueEvent.name,
+          courseName: course.name,
           value: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
         })
         .from(playerHole)
         .innerJoin(player, eq(player.id, playerHole.playerId))
         .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
+        .innerJoin(course, eq(course.id, leagueEvent.courseId))
         .where(leagueFilter)
-        .groupBy(player.id, player.displayName, playerHole.leagueEventId, leagueEvent.name)
+        .groupBy(player.id, player.displayName, playerHole.leagueEventId, leagueEvent.name, course.name)
     ),
     withDbRetry(() =>
       db
@@ -425,7 +491,10 @@ const getHomeHighlightsForLeague = async (leagueId: string): Promise<HomeHighlig
     const bestRoundRows = tiesAtExtreme(roundRows, "min");
     const bestRoundEventLinks = Array.from(
       new Map(
-        bestRoundRows.map((row) => [row.leagueEventId, { leagueEventId: row.leagueEventId, eventName: row.eventName }])
+        bestRoundRows.map((row) => [
+          row.leagueEventId,
+          { leagueEventId: row.leagueEventId, eventName: row.eventName, courseName: row.courseName },
+        ])
       ).values()
     );
 
@@ -442,6 +511,7 @@ const getHomeHighlightsForLeague = async (leagueId: string): Promise<HomeHighlig
                 playerName: row.playerName,
                 leagueEventId: row.leagueEventId,
                 eventName: row.eventName,
+                courseName: row.courseName,
               })),
               eventLinks: bestRoundEventLinks,
             }
@@ -470,15 +540,16 @@ const getHomeHighlightsForLeague = async (leagueId: string): Promise<HomeHighlig
 };
 
 export const getHomeHighlights = async (leagueId: string) =>
-  unstable_cache(() => getHomeHighlightsForLeague(leagueId), ["home-highlights-v3", leagueId], {
+  unstable_cache(() => getHomeHighlightsForLeague(leagueId), ["home-highlights-v4", leagueId], {
     revalidate: 30,
   })();
 
 export type PlayerStats = {
-  bestHole: { holeNumber: number; avgDiff: number } | null;
+  bestHole: { holeNumber: number; courseId: string; courseName: string; avgDiff: number } | null;
   bestRound: {
     leagueEventId: string;
     eventName: string;
+    courseName: string;
     roundDiff: number;
   } | null;
   birdieCount: number;
@@ -498,12 +569,15 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
     db
       .select({
         holeNumber: hole.holeNumber,
+        courseId: course.id,
+        courseName: course.name,
         avgDiff: sql<number>`avg(${playerHole.diff})`,
       })
       .from(playerHole)
       .innerJoin(hole, eq(hole.id, playerHole.holeId))
+      .innerJoin(course, eq(course.id, hole.courseId))
       .where(eq(playerHole.playerId, playerId))
-      .groupBy(hole.holeNumber)
+      .groupBy(hole.id, hole.holeNumber, course.id, course.name)
       .orderBy(sql`avg(${playerHole.diff}) asc`, asc(hole.holeNumber))
       .limit(1),
     db
@@ -511,12 +585,14 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
         leagueEventId: leagueEvent.id,
         eventName: leagueEvent.name,
         eventDate: leagueEvent.eventDate,
+        courseName: course.name,
         roundDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
       })
       .from(playerHole)
       .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
+      .innerJoin(course, eq(course.id, leagueEvent.courseId))
       .where(eq(playerHole.playerId, playerId))
-      .groupBy(leagueEvent.id, leagueEvent.name, leagueEvent.eventDate),
+      .groupBy(leagueEvent.id, leagueEvent.name, leagueEvent.eventDate, course.name),
     db
       .select({
         birdieCount: sql<number>`count(*) filter (where ${playerHole.score} < ${hole.par})::int`,
@@ -535,31 +611,33 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
       .groupBy(miniGameWin.kind),
   ]);
 
-  const bestRound =
-    roundRows.length > 0
-      ? roundRows.reduce((best, row) => {
-          const rowDiff = Number(row.roundDiff);
-          const bestDiff = Number(best.roundDiff);
-          if (rowDiff < bestDiff) return row;
-          if (rowDiff > bestDiff) return best;
-          const rowDate = row.eventDate ?? "";
-          const bestDate = best.eventDate ?? "";
-          return rowDate > bestDate ? row : best;
-        })
-      : null;
+  const bestRound = pickBestRound(
+    roundRows.map((row) => ({
+      leagueEventId: row.leagueEventId,
+      eventDate: row.eventDate,
+      roundDiff: Number(row.roundDiff),
+    }))
+  );
+
+  const bestRoundRow = bestRound
+    ? roundRows.find((row) => row.leagueEventId === bestRound.leagueEventId) ?? null
+    : null;
 
   return {
     bestHole: bestHoleRows[0]
       ? {
           holeNumber: bestHoleRows[0].holeNumber,
+          courseId: bestHoleRows[0].courseId,
+          courseName: bestHoleRows[0].courseName,
           avgDiff: Number(bestHoleRows[0].avgDiff),
         }
       : null,
-    bestRound: bestRound
+    bestRound: bestRoundRow
       ? {
-          leagueEventId: bestRound.leagueEventId,
-          eventName: bestRound.eventName,
-          roundDiff: Number(bestRound.roundDiff),
+          leagueEventId: bestRoundRow.leagueEventId,
+          eventName: bestRoundRow.eventName,
+          courseName: bestRoundRow.courseName,
+          roundDiff: Number(bestRoundRow.roundDiff),
         }
       : null,
     birdieCount: Number(countsRow[0]?.birdieCount ?? 0),
