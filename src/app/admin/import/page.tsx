@@ -4,11 +4,11 @@ import { db } from "@/lib/db/client";
 import { course, league, leagueEvent } from "@/lib/db/schema";
 
 type AdminImportPageProps = {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; imported?: string; eventId?: string; players?: string; scores?: string }>;
 };
 
 export default async function AdminImportPage({ searchParams }: AdminImportPageProps) {
-  const { error } = await searchParams;
+  const { error, imported, eventId, players, scores } = await searchParams;
   const [events, leagues, courses] = await Promise.all([
     db.query.leagueEvent.findMany({
       orderBy: asc(leagueEvent.eventDate),
@@ -24,7 +24,16 @@ export default async function AdminImportPage({ searchParams }: AdminImportPageP
       <p className="text-sm text-slate-600">
         Upload an Excel file and map it to an event. Players are matched by `username` column to player `key`.
       </p>
-      <EventImportForm events={events} leagues={leagues} courses={courses} error={error} />
+      <EventImportForm
+        events={events}
+        leagues={leagues}
+        courses={courses}
+        error={error}
+        imported={imported}
+        eventId={eventId}
+        players={players}
+        scores={scores}
+      />
     </section>
   );
 }

@@ -5,12 +5,15 @@ export default async function CourseDetailPage({ params }: { params: Promise<{ i
   const [course, holes] = await Promise.all([getCourseById(id), getCourseHoles(id)]);
   if (!course) return <div>Course not found.</div>;
 
+  const totalPar = holes.reduce((sum, hole) => sum + hole.par, 0);
+  const totalDistanceFeet = holes.reduce((sum, hole) => sum + (hole.distanceFeet ?? 0), 0);
+
   return (
     <section className="space-y-3">
       <h1 className="text-xl font-semibold">{course.name}</h1>
       <p>{course.location ?? "No location"}</p>
       <p className="text-sm text-slate-600">
-        Rating {course.rating ?? "-"} • Slope {course.slope ?? "-"} • {course.isActive ? "Active" : "Inactive"}
+        Par {totalPar} · {totalDistanceFeet > 0 ? `${totalDistanceFeet.toLocaleString()} ft` : "Distance TBD"}
       </p>
       <table className="w-full border bg-white text-sm">
         <thead>

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { asc, eq, sql } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db/client";
@@ -317,39 +317,71 @@ export async function importEventSpreadsheet(formData: FormData) {
     redirectImportError("Spreadsheet has no data rows.");
   }
 
-  for (const row of rows) {
-    const username = String(row.username || "").trim();
-    const fullName = String(row.name || "").trim();
-    if (!username) continue;
+  const parsedRows = rows
+    .map((row) => ({
+      username: String(row.username || "").trim(),
+      fullName: String(row.name || "").trim(),
+      row,
+    }))
+    .filter((entry) => entry.username.length > 0);
 
-    let existingPlayer = await db.query.player.findFirst({
-      where: eq(player.key, username),
-      columns: { id: true },
-    });
+  if (parsedRows.length === 0) {
+    redirectImportError("Spreadsheet has no rows with a username.");
+  }
 
-    if (!existingPlayer) {
-      const nameParts = fullName.split(" ").filter(Boolean);
-      const firstName = nameParts[0] ?? username;
-      const lastName = nameParts.slice(1).join(" ") || username;
-      const [createdPlayer] = await db
-        .insert(player)
-        .values({
-          key: username,
-          displayName: fullName || username,
-          firstName,
-          lastName,
+  const usernames = [...new Set(parsedRows.map((entry) => entry.username))];
+  const existingPlayers = await db
+    .select({ id: player.id, key: player.key })
+    .from(player)
+    .where(inArray(player.key, usernames));
+
+  const playerIdByKey = new Map(existingPlayers.map((p) => [p.key, p.id]));
+  const missingUsernames = usernames.filter((username) => !playerIdByKey.has(username));
+
+  if (missingUsernames.length > 0) {
+    const insertedPlayers = await db
+      .insert(player)
+      .values(
+        missingUsernames.map((username) => {
+          const fullName =
+            parsedRows.find((entry) => entry.username === username)?.fullName ?? username;
+          const nameParts = fullName.split(" ").filter(Boolean);
+          const firstName = nameParts[0] ?? username;
+          const lastName = nameParts.slice(1).join(" ") || username;
+          return {
+            key: username,
+            displayName: fullName || username,
+            firstName,
+            lastName,
+          };
         })
-        .returning({ id: player.id });
-      existingPlayer = createdPlayer;
-    }
+      )
+      .returning({ id: player.id, key: player.key });
 
+    for (const created of insertedPlayers) {
+      playerIdByKey.set(created.key, created.id);
+    }
+  }
+
+  const playerIds = [...new Set(playerIdByKey.values())];
+  if (playerIds.length > 0) {
     await db
       .insert(playerLeague)
-      .values({
-        playerId: existingPlayer.id,
-        leagueId: ensuredEvent.leagueId,
-      })
+      .values(playerIds.map((playerId) => ({ playerId, leagueId: ensuredEvent.leagueId })))
       .onConflictDoNothing();
+  }
+
+  const scoreRows: {
+    playerId: string;
+    holeId: string;
+    leagueEventId: string;
+    score: number;
+    diff: number;
+  }[] = [];
+
+  for (const { username, row } of parsedRows) {
+    const playerId = playerIdByKey.get(username);
+    if (!playerId) continue;
 
     for (let holeNumber = 1; holeNumber <= 18; holeNumber += 1) {
       const scoreRaw = row[`hole_${holeNumber}`];
@@ -360,24 +392,28 @@ export async function importEventSpreadsheet(formData: FormData) {
       const score = Number(scoreRaw);
       if (!Number.isFinite(score)) continue;
 
-      await db
-        .insert(playerHole)
-        .values({
-          playerId: existingPlayer.id,
-          holeId: mappedHole.id,
-          leagueEventId: ensuredEvent.id,
-          score,
-          diff: score - mappedHole.par,
-        })
-        .onConflictDoUpdate({
-          target: [playerHole.playerId, playerHole.holeId, playerHole.leagueEventId],
-          set: {
-            score,
-            diff: score - mappedHole.par,
-            updatedDate: new Date(),
-          },
-        });
+      scoreRows.push({
+        playerId,
+        holeId: mappedHole.id,
+        leagueEventId: ensuredEvent.id,
+        score,
+        diff: score - mappedHole.par,
+      });
     }
+  }
+
+  if (scoreRows.length > 0) {
+    await db
+      .insert(playerHole)
+      .values(scoreRows)
+      .onConflictDoUpdate({
+        target: [playerHole.playerId, playerHole.holeId, playerHole.leagueEventId],
+        set: {
+          score: sql`excluded.score`,
+          diff: sql`excluded.diff`,
+          updatedDate: new Date(),
+        },
+      });
   }
 
   if (PLAYER_RATINGS_ENABLED) {
@@ -389,6 +425,9 @@ export async function importEventSpreadsheet(formData: FormData) {
   revalidatePath("/standings");
   revalidatePath("/players");
   revalidatePath("/");
+  redirect(
+    `/admin/import?imported=1&eventId=${ensuredEvent.id}&players=${parsedRows.length}&scores=${scoreRows.length}`
+  );
 }
 
 export async function recomputeAllDiffs() {

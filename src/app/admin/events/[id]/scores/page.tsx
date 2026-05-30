@@ -3,9 +3,10 @@ import { eq } from "drizzle-orm";
 import { PlayerLink } from "@/components/player-link";
 import { createPlayerHoleScore } from "@/lib/actions";
 import { db } from "@/lib/db/client";
+import { RoundDiffCellContent } from "@/components/round-diff-cell";
+import { RoundScoreCell } from "@/components/round-score-cell";
 import { getEventScores } from "@/lib/db/queries";
 import { hole, leagueEvent, player, playerLeague } from "@/lib/db/schema";
-import { formatDiff } from "@/lib/format-diff";
 
 export default async function AdminEventScoresPage({
   params,
@@ -58,9 +59,15 @@ export default async function AdminEventScoresPage({
               <td className="p-2">
                 <PlayerLink playerId={r.playerId} displayName={r.displayName} />
               </td>
-              <td className="p-2">{r.totalScore}</td>
-              <td className="p-2">{formatDiff(r.totalDiff)}</td>
-              <td className="p-2">{r.holesPlayed}</td>
+              <td className="p-2">
+                <RoundScoreCell score={Number(r.totalScore)} isDnf={r.isDnf} />
+              </td>
+              <td className="p-2">
+                <RoundDiffCellContent diff={Number(r.totalDiff)} isDnf={r.isDnf} />
+              </td>
+              <td className="p-2">
+                {r.holesPlayed}/{r.expectedHoleCount}
+              </td>
             </tr>
           ))}
         </tbody>

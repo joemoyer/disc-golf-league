@@ -2,6 +2,7 @@ import Link from "next/link";
 import { HoleScoreCellContent } from "@/components/hole-score-cell";
 import { PlayerLink } from "@/components/player-link";
 import { RoundDiffCellContent } from "@/components/round-diff-cell";
+import { RoundScoreCell } from "@/components/round-score-cell";
 import type { PastEventPreview } from "@/lib/db/queries";
 import { miniGameCellKey } from "@/lib/mini-games";
 
@@ -51,9 +52,11 @@ export function PastEventPreviewCard({ preview }: PastEventPreviewCardProps) {
                   <td className="p-1">
                     <PlayerLink playerId={row.playerId} displayName={row.displayName} />
                   </td>
-                  <td className="p-1 text-center">{row.totalScore}</td>
                   <td className="p-1 text-center">
-                    <RoundDiffCellContent diff={row.totalDiff} isBestRound={row.isBestRound} />
+                    <RoundScoreCell score={row.totalScore} isDnf={row.isDnf} />
+                  </td>
+                  <td className="p-1 text-center">
+                    <RoundDiffCellContent diff={row.totalDiff} isDnf={row.isDnf} isBestRound={row.isBestRound} />
                   </td>
                   {preview.holeNumbers.map((holeNumber) => {
                     const holeScore = row.holeScores.find((h) => h.holeNumber === holeNumber);

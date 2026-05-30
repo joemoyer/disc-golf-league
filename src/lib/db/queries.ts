@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { unstable_cache } from "next/cache";
 import { db } from "@/lib/db/client";
 import {
@@ -15,9 +15,14 @@ import {
 } from "@/lib/db/schema";
 import { withDbRetry } from "@/lib/db/resilient";
 import { buildMiniGameWinsByCell } from "@/lib/mini-games";
+import { compareEventScores, isRoundComplete, withRoundCompletion } from "@/lib/round-completion";
 import { PLAYER_RATINGS_ENABLED } from "@/lib/ratings/enabled";
 
 export const PLAYERS_PAGE_SIZE = 15;
+export const HOME_EVENTS_PAGE_SIZE = 5;
+export const PLAYER_RECENT_EVENTS_PAGE_SIZE = 15;
+export const LEAGUE_EVENTS_PAGE_SIZE = 10;
+export const LEAGUE_PLAYERS_PAGE_SIZE = 10;
 
 export const getPlayers = async () => db.query.player.findMany({ orderBy: asc(player.displayName) });
 
@@ -96,8 +101,14 @@ export const getCourseHoles = async (courseId: string) =>
   db.query.hole.findMany({ where: eq(hole.courseId, courseId), orderBy: asc(hole.holeNumber) });
 
 export const getLeagues = unstable_cache(
-  async () => withDbRetry(() => db.query.league.findMany({ orderBy: asc(league.name) })),
-  ["get-leagues"],
+  async () =>
+    withDbRetry(() =>
+      db
+        .select()
+        .from(league)
+        .orderBy(sql`${league.startDate} desc nulls last`, asc(league.name))
+    ),
+  ["get-leagues-v2"],
   { revalidate: 60 }
 );
 
@@ -106,6 +117,15 @@ export const getLeagueEvents = async (leagueId: string) =>
     where: eq(leagueEvent.leagueId, leagueId),
     orderBy: asc(leagueEvent.eventDate),
   });
+
+const expectedEventHoleCountSubquery = (
+  eventId: string | typeof playerHole.leagueEventId | typeof leagueEvent.id
+) =>
+  sql<number>`(
+    select count(distinct ph2.hole_id)::int
+    from ${playerHole} ph2
+    where ph2.league_event_id = ${eventId}
+  )`;
 
 const getEventScoresCached = unstable_cache(
   async (eventId: string) =>
@@ -117,18 +137,21 @@ const getEventScoresCached = unstable_cache(
           totalScore: sql<number>`coalesce(sum(${playerHole.score}), 0)`,
           totalDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
           holesPlayed: sql<number>`count(distinct ${playerHole.holeId})`,
+          expectedHoleCount: expectedEventHoleCountSubquery(eventId),
         })
         .from(playerHole)
         .innerJoin(player, eq(player.id, playerHole.playerId))
         .where(eq(playerHole.leagueEventId, eventId))
         .groupBy(player.id, player.displayName)
-        .orderBy(sql`coalesce(sum(${playerHole.score}), 0) asc`)
     ),
-  ["event-scores"],
+  ["event-scores-v3"],
   { revalidate: 10 }
 );
 
-export const getEventScores = async (eventId: string) => getEventScoresCached(eventId);
+export const getEventScores = async (eventId: string) =>
+  getEventScoresCached(eventId)
+    .then((rows) => rows.map(withRoundCompletion))
+    .then((rows) => [...rows].sort(compareEventScores));
 
 type RoundForBestPick = {
   leagueEventId: string;
@@ -161,6 +184,8 @@ export const getBestRoundEventIdForPlayers = async (playerIds: string[]) => {
         leagueEventId: playerHole.leagueEventId,
         eventDate: leagueEvent.eventDate,
         roundDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)::int`,
+        holesPlayed: sql<number>`count(distinct ${playerHole.holeId})::int`,
+        expectedHoleCount: expectedEventHoleCountSubquery(playerHole.leagueEventId),
       })
       .from(playerHole)
       .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
@@ -170,6 +195,7 @@ export const getBestRoundEventIdForPlayers = async (playerIds: string[]) => {
 
   const roundsByPlayer = new Map<string, RoundForBestPick[]>();
   for (const row of roundTotals) {
+    if (!isRoundComplete(Number(row.holesPlayed), Number(row.expectedHoleCount))) continue;
     const rounds = roundsByPlayer.get(row.playerId) ?? [];
     rounds.push({
       leagueEventId: row.leagueEventId,
@@ -287,23 +313,62 @@ export const getPlayerById = async (id: string) =>
     where: eq(player.id, id),
   });
 
-export const getPlayerRecentEvents = async (playerId: string) =>
-  db
-    .select({
-      leagueEventId: leagueEvent.id,
-      eventName: leagueEvent.name,
-      eventDate: leagueEvent.eventDate,
-      courseName: course.name,
-      totalScore: sql<number>`coalesce(sum(${playerHole.score}), 0)`,
-      totalDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
-      holesPlayed: sql<number>`count(distinct ${playerHole.holeId})`,
-    })
-    .from(playerHole)
-    .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
-    .innerJoin(course, eq(course.id, leagueEvent.courseId))
-    .where(eq(playerHole.playerId, playerId))
-    .groupBy(leagueEvent.id, leagueEvent.name, leagueEvent.eventDate, course.name)
-    .orderBy(sql`${leagueEvent.eventDate} desc nulls last`, asc(leagueEvent.name));
+
+export type PlayerRecentEventsPageResult = {
+  events: ReturnType<typeof withRoundCompletion>[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export const getPlayerRecentEventsPaginated = async (
+  playerId: string,
+  options: { page?: number; pageSize?: number } = {}
+) => {
+  const pageSize = options.pageSize ?? PLAYER_RECENT_EVENTS_PAGE_SIZE;
+  const page = Math.max(1, options.page ?? 1);
+  const playerFilter = eq(playerHole.playerId, playerId);
+
+  const [countRow, rows] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(distinct ${leagueEvent.id})::int` })
+      .from(playerHole)
+      .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
+      .where(playerFilter),
+    db
+      .select({
+        leagueEventId: leagueEvent.id,
+        eventName: leagueEvent.name,
+        eventDate: leagueEvent.eventDate,
+        courseName: course.name,
+        totalScore: sql<number>`coalesce(sum(${playerHole.score}), 0)`,
+        totalDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
+        holesPlayed: sql<number>`count(distinct ${playerHole.holeId})`,
+        expectedHoleCount: expectedEventHoleCountSubquery(leagueEvent.id),
+      })
+      .from(playerHole)
+      .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
+      .innerJoin(course, eq(course.id, leagueEvent.courseId))
+      .where(playerFilter)
+      .groupBy(leagueEvent.id, leagueEvent.name, leagueEvent.eventDate, course.name)
+      .orderBy(sql`${leagueEvent.eventDate} desc nulls last`, asc(leagueEvent.name))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+  ]);
+
+  const totalCount = Number(countRow[0]?.count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  return {
+    events: rows.map(withRoundCompletion),
+    totalCount,
+    page: safePage,
+    pageSize,
+    totalPages,
+  };
+};
 
 export const getCourseById = async (courseId: string) =>
   withDbRetry(() =>
@@ -343,11 +408,105 @@ export type HomeHighlights = {
   mostAces: HomeCountHighlight | null;
 };
 
-const tiesAtExtreme = <T extends { value: number }>(rows: T[], mode: "min" | "max") => {
-  if (rows.length === 0) return [];
-  const target = mode === "min" ? Math.min(...rows.map((r) => Number(r.value))) : Math.max(...rows.map((r) => Number(r.value)));
-  return rows.filter((r) => Number(r.value) === target);
+const compareFirstReached = (
+  a: {
+    eventDate: string | null;
+    leagueEventId: string;
+    holeNumber?: number;
+    playerName: string;
+  },
+  b: {
+    eventDate: string | null;
+    leagueEventId: string;
+    holeNumber?: number;
+    playerName: string;
+  }
+) => {
+  const dateA = a.eventDate ?? "9999-12-31";
+  const dateB = b.eventDate ?? "9999-12-31";
+  if (dateA !== dateB) return dateA.localeCompare(dateB);
+  if (a.leagueEventId !== b.leagueEventId) return a.leagueEventId.localeCompare(b.leagueEventId);
+  const holeA = a.holeNumber ?? 0;
+  const holeB = b.holeNumber ?? 0;
+  if (holeA !== holeB) return holeA - holeB;
+  return a.playerName.localeCompare(b.playerName);
 };
+
+const pickFirstToExtremeValue = <
+  T extends {
+    value: number;
+    eventDate: string | null;
+    leagueEventId: string;
+    playerName: string;
+    holeNumber?: number;
+  },
+>(
+  rows: T[],
+  mode: "min" | "max"
+): T | null => {
+  if (rows.length === 0) return null;
+  const target =
+    mode === "min"
+      ? Math.min(...rows.map((row) => Number(row.value)))
+      : Math.max(...rows.map((row) => Number(row.value)));
+  const tied = rows.filter((row) => Number(row.value) === target);
+  return [...tied].sort(compareFirstReached)[0] ?? null;
+};
+
+type StatTimelineRow = {
+  playerId: string;
+  playerName: string;
+  eventDate: string | null;
+  leagueEventId: string;
+  holeNumber: number;
+};
+
+const pickFirstToReachMaxCount = (timeline: StatTimelineRow[]) => {
+  const totals = new Map<string, { playerId: string; playerName: string; value: number }>();
+  for (const row of timeline) {
+    const current = totals.get(row.playerId);
+    if (current) {
+      current.value += 1;
+    } else {
+      totals.set(row.playerId, { playerId: row.playerId, playerName: row.playerName, value: 1 });
+    }
+  }
+
+  const leaders = [...totals.values()];
+  if (leaders.length === 0) return null;
+
+  const maxValue = Math.max(...leaders.map((row) => row.value));
+  if (maxValue === 0) return null;
+
+  const leaderIds = new Set(leaders.filter((row) => row.value === maxValue).map((row) => row.playerId));
+  const counts = new Map<string, number>();
+  const milestones = new Map<string, StatTimelineRow>();
+
+  for (const row of timeline) {
+    if (!leaderIds.has(row.playerId)) continue;
+    const next = (counts.get(row.playerId) ?? 0) + 1;
+    counts.set(row.playerId, next);
+    if (next === maxValue && !milestones.has(row.playerId)) {
+      milestones.set(row.playerId, row);
+    }
+  }
+
+  const winnerMilestone = [...milestones.values()].sort(compareFirstReached)[0];
+  if (!winnerMilestone) return null;
+
+  return {
+    playerId: winnerMilestone.playerId,
+    playerName: winnerMilestone.playerName,
+    value: maxValue,
+  };
+};
+
+const statTimelineOrder = [
+  asc(leagueEvent.eventDate),
+  asc(leagueEvent.name),
+  asc(hole.holeNumber),
+  asc(player.displayName),
+] as const;
 
 const todayIsoDate = () => new Date().toISOString().slice(0, 10);
 
@@ -366,44 +525,158 @@ export type PastEventPreview = LeagueEventListItem & {
     displayName: string;
     totalScore: number;
     totalDiff: number;
+    isDnf: boolean;
     isBestRound: boolean;
     holeScores: { holeNumber: number; score: number; par: number }[];
   }[];
 };
 
-export const getLeagueEventsGrouped = async (leagueId: string) => {
-  const events = await db
-    .select({
-      id: leagueEvent.id,
-      name: leagueEvent.name,
-      eventDate: leagueEvent.eventDate,
-      courseName: course.name,
-    })
+const leagueEventListSelect = {
+  id: leagueEvent.id,
+  name: leagueEvent.name,
+  eventDate: leagueEvent.eventDate,
+  courseName: course.name,
+};
+
+export type LeagueEventsGroupedResult = {
+  future: LeagueEventListItem[];
+  past: LeagueEventListItem[];
+  futureTotal: number;
+  pastTotal: number;
+};
+
+export const getLeagueEventsGrouped = async (
+  leagueId: string,
+  options?: { futureLimit?: number; pastLimit?: number }
+): Promise<LeagueEventsGroupedResult> => {
+  const today = todayIsoDate();
+  const futureFilter = and(
+    eq(leagueEvent.leagueId, leagueId),
+    or(isNull(leagueEvent.eventDate), gte(leagueEvent.eventDate, today))
+  );
+  const pastFilter = and(eq(leagueEvent.leagueId, leagueId), lt(leagueEvent.eventDate, today));
+
+  const futureBase = db
+    .select(leagueEventListSelect)
     .from(leagueEvent)
     .innerJoin(course, eq(course.id, leagueEvent.courseId))
-    .where(eq(leagueEvent.leagueId, leagueId))
+    .where(futureFilter)
     .orderBy(asc(leagueEvent.eventDate), asc(leagueEvent.name));
 
-  const today = todayIsoDate();
-  const future: LeagueEventListItem[] = [];
-  const past: LeagueEventListItem[] = [];
+  const pastBase = db
+    .select(leagueEventListSelect)
+    .from(leagueEvent)
+    .innerJoin(course, eq(course.id, leagueEvent.courseId))
+    .where(pastFilter)
+    .orderBy(desc(leagueEvent.eventDate), asc(leagueEvent.name));
 
-  for (const event of events) {
-    const item = {
-      id: event.id,
-      name: event.name,
-      eventDate: event.eventDate,
-      courseName: event.courseName,
-    };
-    if (!event.eventDate || event.eventDate >= today) {
-      future.push(item);
-    } else {
-      past.push(item);
-    }
-  }
+  const [futureRows, pastRows, futureCountRow, pastCountRow] = await Promise.all([
+    options?.futureLimit !== undefined ? futureBase.limit(options.futureLimit) : futureBase,
+    options?.pastLimit !== undefined ? pastBase.limit(options.pastLimit) : pastBase,
+    db.select({ count: sql<number>`count(*)::int` }).from(leagueEvent).where(futureFilter),
+    db.select({ count: sql<number>`count(*)::int` }).from(leagueEvent).where(pastFilter),
+  ]);
 
-  past.reverse();
-  return { future, past };
+  return {
+    future: futureRows,
+    past: pastRows,
+    futureTotal: Number(futureCountRow[0]?.count ?? 0),
+    pastTotal: Number(pastCountRow[0]?.count ?? 0),
+  };
+};
+
+export type LeagueRecentEventsPageResult = {
+  events: LeagueEventListItem[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export const getLeagueRecentEventsPaginated = async (
+  leagueId: string,
+  options: { page?: number } = {}
+): Promise<LeagueRecentEventsPageResult> => {
+  const page = Math.max(1, options.page ?? 1);
+  const pageSize = LEAGUE_EVENTS_PAGE_SIZE;
+  const leagueFilter = eq(leagueEvent.leagueId, leagueId);
+
+  const [countRow, events] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(leagueEvent).where(leagueFilter),
+    db
+      .select(leagueEventListSelect)
+      .from(leagueEvent)
+      .innerJoin(course, eq(course.id, leagueEvent.courseId))
+      .where(leagueFilter)
+      .orderBy(desc(leagueEvent.eventDate), asc(leagueEvent.name))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+  ]);
+
+  const totalCount = Number(countRow[0]?.count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  return { events, totalCount, page: safePage, pageSize, totalPages };
+};
+
+export type LeaguePlayerWithRounds = {
+  playerId: string;
+  displayName: string;
+  eventsPlayed: number;
+};
+
+export type LeaguePlayersPageResult = {
+  players: LeaguePlayerWithRounds[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export const getLeaguePlayersWithRoundsPaginated = async (
+  leagueId: string,
+  options: { page?: number } = {}
+): Promise<LeaguePlayersPageResult> => {
+  const page = Math.max(1, options.page ?? 1);
+  const pageSize = LEAGUE_PLAYERS_PAGE_SIZE;
+  const leagueEventJoin = sql`${leagueEvent.id} = ${playerHole.leagueEventId} and ${leagueEvent.leagueId} = ${leagueId}::uuid`;
+
+  const [countRow, players] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(distinct ${playerHole.playerId})::int` })
+      .from(playerHole)
+      .innerJoin(leagueEvent, leagueEventJoin),
+    db
+      .select({
+        playerId: player.id,
+        displayName: player.displayName,
+        eventsPlayed: sql<number>`count(distinct ${leagueEvent.id})::int`,
+      })
+      .from(playerHole)
+      .innerJoin(player, eq(player.id, playerHole.playerId))
+      .innerJoin(leagueEvent, leagueEventJoin)
+      .groupBy(player.id, player.displayName)
+      .orderBy(asc(player.displayName))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+  ]);
+
+  const totalCount = Number(countRow[0]?.count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  return {
+    players: players.map((row) => ({
+      playerId: row.playerId,
+      displayName: row.displayName,
+      eventsPlayed: Number(row.eventsPlayed),
+    })),
+    totalCount,
+    page: safePage,
+    pageSize,
+    totalPages,
+  };
 };
 
 const buildPastEventPreview = async (event: LeagueEventListItem): Promise<PastEventPreview> => {
@@ -427,7 +700,8 @@ const buildPastEventPreview = async (event: LeagueEventListItem): Promise<PastEv
       displayName: row.displayName,
       totalScore: Number(row.totalScore),
       totalDiff: Number(row.totalDiff),
-      isBestRound: isPlayerBestRound(event.id, bestRoundEventIds.get(row.playerId)),
+      isDnf: row.isDnf,
+      isBestRound: !row.isDnf && isPlayerBestRound(event.id, bestRoundEventIds.get(row.playerId)),
       holeScores: breakdown
         .filter((entry) => entry.playerId === row.playerId && topPlayerIds.has(entry.playerId))
         .map((entry) => ({ holeNumber: entry.holeNumber, score: entry.score, par: entry.par })),
@@ -441,7 +715,7 @@ export const getPastEventPreviews = async (pastEvents: LeagueEventListItem[]) =>
 const getHomeHighlightsForLeague = async (leagueId: string): Promise<HomeHighlights> => {
   const leagueFilter = eq(leagueEvent.leagueId, leagueId);
 
-  const [roundRows, birdieRows, aceRows] = await Promise.all([
+  const [roundRows, birdieTimeline, aceTimeline] = await Promise.all([
     withDbRetry(() =>
       db
         .select({
@@ -450,97 +724,111 @@ const getHomeHighlightsForLeague = async (leagueId: string): Promise<HomeHighlig
           leagueEventId: playerHole.leagueEventId,
           eventName: leagueEvent.name,
           courseName: course.name,
+          eventDate: leagueEvent.eventDate,
           value: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
+          holesPlayed: sql<number>`count(distinct ${playerHole.holeId})::int`,
+          expectedHoleCount: expectedEventHoleCountSubquery(playerHole.leagueEventId),
         })
         .from(playerHole)
         .innerJoin(player, eq(player.id, playerHole.playerId))
         .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
         .innerJoin(course, eq(course.id, leagueEvent.courseId))
         .where(leagueFilter)
-        .groupBy(player.id, player.displayName, playerHole.leagueEventId, leagueEvent.name, course.name)
+        .groupBy(
+          player.id,
+          player.displayName,
+          playerHole.leagueEventId,
+          leagueEvent.name,
+          leagueEvent.eventDate,
+          course.name
+        )
     ),
     withDbRetry(() =>
       db
         .select({
           playerId: player.id,
           playerName: player.displayName,
-          value: sql<number>`count(*)::int`,
+          eventDate: leagueEvent.eventDate,
+          leagueEventId: leagueEvent.id,
+          holeNumber: hole.holeNumber,
         })
         .from(playerHole)
         .innerJoin(player, eq(player.id, playerHole.playerId))
         .innerJoin(hole, eq(hole.id, playerHole.holeId))
         .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
         .where(and(leagueFilter, sql`${playerHole.score} < ${hole.par}`))
-        .groupBy(player.id, player.displayName)
+        .orderBy(...statTimelineOrder)
     ),
     withDbRetry(() =>
       db
         .select({
           playerId: player.id,
           playerName: player.displayName,
-          value: sql<number>`count(*)::int`,
+          eventDate: leagueEvent.eventDate,
+          leagueEventId: leagueEvent.id,
+          holeNumber: hole.holeNumber,
         })
         .from(playerHole)
         .innerJoin(player, eq(player.id, playerHole.playerId))
+        .innerJoin(hole, eq(hole.id, playerHole.holeId))
         .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
         .where(and(leagueFilter, eq(playerHole.score, 1)))
-        .groupBy(player.id, player.displayName)
+        .orderBy(...statTimelineOrder)
     ),
   ]);
 
-    const bestRoundRows = tiesAtExtreme(roundRows, "min");
-    const bestRoundEventLinks = Array.from(
-      new Map(
-        bestRoundRows.map((row) => [
-          row.leagueEventId,
-          { leagueEventId: row.leagueEventId, eventName: row.eventName, courseName: row.courseName },
-        ])
-      ).values()
-    );
+  const completeRoundRows = roundRows.filter((row) =>
+    isRoundComplete(Number(row.holesPlayed), Number(row.expectedHoleCount))
+  );
+  const bestRoundWinner = pickFirstToExtremeValue(
+    completeRoundRows.map((row) => ({
+      ...row,
+      leagueEventId: row.leagueEventId,
+    })),
+    "min"
+  );
+  const birdieLeader = pickFirstToReachMaxCount(birdieTimeline);
+  const aceLeader = pickFirstToReachMaxCount(aceTimeline);
 
-    const birdieLeaders = tiesAtExtreme(birdieRows, "max");
-    const aceLeaders = tiesAtExtreme(aceRows, "max");
-
-    return {
-      bestRound:
-        bestRoundRows.length > 0
-          ? {
-              roundDiff: Number(bestRoundRows[0].value),
-              players: bestRoundRows.map((row) => ({
-                playerId: row.playerId,
-                playerName: row.playerName,
-                leagueEventId: row.leagueEventId,
-                eventName: row.eventName,
-                courseName: row.courseName,
-              })),
-              eventLinks: bestRoundEventLinks,
-            }
-          : null,
-      mostBirdies:
-        birdieLeaders.length > 0
-          ? {
-              value: Number(birdieLeaders[0].value),
-              players: birdieLeaders.map((row) => ({
-                playerId: row.playerId,
-                playerName: row.playerName,
-              })),
-            }
-          : null,
-      mostAces:
-        aceLeaders.length > 0
-          ? {
-              value: Number(aceLeaders[0].value),
-              players: aceLeaders.map((row) => ({
-                playerId: row.playerId,
-                playerName: row.playerName,
-              })),
-            }
-          : null,
-    };
+  return {
+    bestRound: bestRoundWinner
+      ? {
+          roundDiff: Number(bestRoundWinner.value),
+          players: [
+            {
+              playerId: bestRoundWinner.playerId,
+              playerName: bestRoundWinner.playerName,
+              leagueEventId: bestRoundWinner.leagueEventId,
+              eventName: bestRoundWinner.eventName,
+              courseName: bestRoundWinner.courseName,
+            },
+          ],
+          eventLinks: [
+            {
+              leagueEventId: bestRoundWinner.leagueEventId,
+              eventName: bestRoundWinner.eventName,
+              courseName: bestRoundWinner.courseName,
+            },
+          ],
+        }
+      : null,
+    mostBirdies: birdieLeader
+      ? {
+          value: birdieLeader.value,
+          players: [{ playerId: birdieLeader.playerId, playerName: birdieLeader.playerName }],
+        }
+      : null,
+    mostAces: aceLeader
+      ? {
+          value: aceLeader.value,
+          players: [{ playerId: aceLeader.playerId, playerName: aceLeader.playerName }],
+        }
+      : null,
+  };
 };
 
 export const getHomeHighlights = async (leagueId: string) =>
-  unstable_cache(() => getHomeHighlightsForLeague(leagueId), ["home-highlights-v4", leagueId], {
+  unstable_cache(() => getHomeHighlightsForLeague(leagueId), ["home-highlights-v7", leagueId], {
     revalidate: 30,
   })();
 
@@ -587,6 +875,8 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
         eventDate: leagueEvent.eventDate,
         courseName: course.name,
         roundDiff: sql<number>`coalesce(sum(${playerHole.diff}), 0)`,
+        holesPlayed: sql<number>`count(distinct ${playerHole.holeId})::int`,
+        expectedHoleCount: expectedEventHoleCountSubquery(leagueEvent.id),
       })
       .from(playerHole)
       .innerJoin(leagueEvent, eq(leagueEvent.id, playerHole.leagueEventId))
@@ -612,11 +902,13 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
   ]);
 
   const bestRound = pickBestRound(
-    roundRows.map((row) => ({
-      leagueEventId: row.leagueEventId,
-      eventDate: row.eventDate,
-      roundDiff: Number(row.roundDiff),
-    }))
+    roundRows
+      .filter((row) => isRoundComplete(Number(row.holesPlayed), Number(row.expectedHoleCount)))
+      .map((row) => ({
+        leagueEventId: row.leagueEventId,
+        eventDate: row.eventDate,
+        roundDiff: Number(row.roundDiff),
+      }))
   );
 
   const bestRoundRow = bestRound
@@ -648,21 +940,31 @@ export const getPlayerStats = async (playerId: string): Promise<PlayerStats> => 
   };
 };
 
-export const getPlayerPageData = async (playerId: string, leagueId?: string) =>
+export const getPlayerPageData = async (
+  playerId: string,
+  options?: { leagueId?: string; eventsPage?: number }
+) =>
   withDbRetry(async () => {
     const playerRecord = await db.query.player.findFirst({
       where: eq(player.id, playerId),
     });
     if (!playerRecord) return null;
 
-    const [recentEvents, ratingHistory, leagues, stats] = await Promise.all([
-      getPlayerRecentEvents(playerId),
-      PLAYER_RATINGS_ENABLED ? getPlayerRatingHistory(playerId, leagueId) : Promise.resolve([]),
+    const [recentEventsPage, ratingHistory, leagues, stats] = await Promise.all([
+      getPlayerRecentEventsPaginated(playerId, { page: options?.eventsPage }),
+      PLAYER_RATINGS_ENABLED ? getPlayerRatingHistory(playerId, options?.leagueId) : Promise.resolve([]),
       getLeagues(),
       getPlayerStats(playerId),
     ]);
 
-    return { player: playerRecord, recentEvents, ratingHistory, leagues, stats };
+    return {
+      player: playerRecord,
+      recentEvents: recentEventsPage.events,
+      recentEventsPagination: recentEventsPage,
+      ratingHistory,
+      leagues,
+      stats,
+    };
   });
 
 export type PlayerRatingHistoryPoint = {

@@ -3,11 +3,21 @@ import { formatDiff } from "@/lib/format-diff";
 
 type RoundDiffCellContentProps = {
   diff: number;
+  isDnf?: boolean;
   isBestRound?: boolean;
   className?: string;
 };
 
-export function RoundDiffCellContent({ diff, isBestRound = false, className = "" }: RoundDiffCellContentProps) {
+export function RoundDiffCellContent({
+  diff,
+  isDnf = false,
+  isBestRound = false,
+  className = "",
+}: RoundDiffCellContentProps) {
+  if (isDnf) {
+    return <span className={`font-medium text-slate-500 ${className}`.trim()}>DNF</span>;
+  }
+
   return (
     <div className={`relative inline-flex items-center justify-center pr-1 pt-1 ${className}`.trim()}>
       {formatDiff(diff)}

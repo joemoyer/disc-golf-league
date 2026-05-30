@@ -1,6 +1,8 @@
 import { HoleScoreCellContent } from "@/components/hole-score-cell";
 import { PlayerLink } from "@/components/player-link";
 import { RoundDiffCellContent } from "@/components/round-diff-cell";
+import { RoundScoreCell } from "@/components/round-score-cell";
+import { ScorecardLegend } from "@/components/scorecard-legend";
 import {
   getBestRoundEventIdForPlayers,
   getCourseHoles,
@@ -37,6 +39,7 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
     }
     byPlayer.get(row.playerId)!.holeScores.set(row.holeNumber, { score: row.score, par: row.par });
   }
+  const resultsByPlayer = new Map(results.map((r) => [r.playerId, r]));
   const diffByPlayer = new Map(results.map((r) => [r.playerId, Number(r.totalDiff)]));
   return (
     <section className="space-y-3">
@@ -50,10 +53,13 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
               <td className="p-2">
                 <PlayerLink playerId={r.playerId} displayName={r.displayName} />
               </td>
-              <td className="p-2">{r.totalScore}</td>
+              <td className="p-2">
+                <RoundScoreCell score={Number(r.totalScore)} isDnf={r.isDnf} />
+              </td>
               <td className="p-2">
                 <RoundDiffCellContent
                   diff={Number(r.totalDiff)}
+                  isDnf={r.isDnf}
                   isBestRound={isPlayerBestRound(id, bestRoundEventIds.get(r.playerId))}
                 />
               </td>
@@ -84,7 +90,9 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
           </thead>
           <tbody>
             {Array.from(byPlayer.entries()).map(([playerId, playerData]) => {
+              const result = resultsByPlayer.get(playerId);
               const totalDiff = diffByPlayer.get(playerId) ?? 0;
+              const isDnf = result?.isDnf ?? false;
               const isBestRound = isPlayerBestRound(id, bestRoundEventIds.get(playerId));
 
               return (
@@ -110,10 +118,13 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
                   );
                 })}
                 <td className="p-2 text-center font-medium">
-                  {Array.from(playerData.holeScores.values()).reduce((sum, entry) => sum + entry.score, 0)}
+                  <RoundScoreCell
+                    score={Array.from(playerData.holeScores.values()).reduce((sum, entry) => sum + entry.score, 0)}
+                    isDnf={isDnf}
+                  />
                 </td>
                 <td className="p-2 text-center font-medium">
-                  <RoundDiffCellContent diff={totalDiff} isBestRound={isBestRound} />
+                  <RoundDiffCellContent diff={totalDiff} isDnf={isDnf} isBestRound={isBestRound} />
                 </td>
               </tr>
               );
@@ -121,6 +132,7 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
           </tbody>
         </table>
       </div>
+      <ScorecardLegend />
     </section>
   );
 }

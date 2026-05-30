@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
+import { ImportSubmitButton } from "@/components/import-submit-button";
 import { importEventSpreadsheet } from "@/lib/actions";
 
 type Option = { id: string; name: string; eventDate?: string | null };
@@ -11,9 +13,22 @@ type EventImportFormProps = {
   leagues: SimpleOption[];
   courses: SimpleOption[];
   error?: string;
+  imported?: string;
+  eventId?: string;
+  players?: string;
+  scores?: string;
 };
 
-export function EventImportForm({ events, leagues, courses, error }: EventImportFormProps) {
+export function EventImportForm({
+  events,
+  leagues,
+  courses,
+  error,
+  imported,
+  eventId,
+  players,
+  scores,
+}: EventImportFormProps) {
   const [createNewEvent, setCreateNewEvent] = useState(false);
 
   return (
@@ -25,6 +40,20 @@ export function EventImportForm({ events, leagues, courses, error }: EventImport
 
       {error ? (
         <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+
+      {imported === "1" ? (
+        <p className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          Import complete — {players ?? "0"} players, {scores ?? "0"} hole scores saved.
+          {eventId ? (
+            <>
+              {" "}
+              <Link href={`/admin/events/${eventId}/scores`} className="font-medium underline">
+                View event scores
+              </Link>
+            </>
+          ) : null}
+        </p>
       ) : null}
 
       <label className="flex items-center gap-2 text-sm font-medium">
@@ -76,9 +105,7 @@ export function EventImportForm({ events, leagues, courses, error }: EventImport
         </div>
       )}
 
-      <button className="rounded bg-slate-900 px-3 py-2 text-white" type="submit">
-        Import Scores
-      </button>
+      <ImportSubmitButton />
     </form>
   );
 }
